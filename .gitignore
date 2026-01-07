@@ -1,0 +1,5 @@
+serviceAccountKey.json
+*.key
+*.pem
+*.p12
+.env

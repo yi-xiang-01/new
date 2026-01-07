@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/main"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- 同一個 LinearLayout：上面輸入區，下面地圖 -->
+    <LinearLayout
+        android:id="@+id/container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Header：名稱 / 種類 / 動作 -->
+        <EditText
+            android:id="@+id/edMapName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="地圖名稱"
+            android:inputType="textPersonName" />
+
+        <EditText
+            android:id="@+id/edMapType"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="地圖種類"
+            android:inputType="text" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnAddSpot"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="新增座標" />
+
+            <Button
+                android:id="@+id/btnSaveMap"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="儲存" />
+
+            <Button
+                android:id="@+id/btnDeleteMap"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="刪除" />
+        </LinearLayout>
+
+        <!-- 地圖：吃滿剩餘空間 -->
+        <fragment
+            android:id="@+id/mapPreview"
+            android:name="com.google.android.gms.maps.SupportMapFragment"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+    </LinearLayout>
+
+    <!-- 底部資訊面板（點 Marker 時彈出） -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/spotSheet"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:padding="16dp"
+        app:cardCornerRadius="16dp"
+        app:cardElevation="8dp"
+        app:layout_behavior="@string/bottom_sheet_behavior"
+        app:behavior_hideable="true"
+        app:behavior_peekHeight="0dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- 照片 -->
+            <ImageView
+                android:id="@+id/ivSpotPhoto"
+                android:layout_width="match_parent"
+                android:layout_height="200dp"
+                android:adjustViewBounds="true"
+                android:scaleType="centerCrop"
+                android:contentDescription="spot photo"
+                android:src="@drawable/map" />
+
+            <!-- 景點名字 -->
+            <TextView
+                android:id="@+id/tvSpotTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="景點名稱"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <!-- 景點介紹 -->
+            <TextView
+                android:id="@+id/tvSpotDesc"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="景點介紹"
+                android:textColor="#616161"
+                android:textSize="14sp" />
+
+            <!-- 三個按鈕：加入行程 / 編輯景點 / 刪除此景點 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:gravity="end"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnAddToTrip"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="加入行程" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnEditSpot"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="編輯景點" />
+
+                <!-- 刪除：Filled（M3 的 filled 就是 Widget.Material3.Button） -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnDeleteSpot"
+                    style="@style/Widget.Material3.Button"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="刪除此推薦景點" />
+            </LinearLayout>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

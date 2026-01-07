@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 權限 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:allowBackup="true"
+        android:usesCleartextTraffic="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MapCollection"
+        tools:targetApi="31">
+
+        <!-- 登入頁（Launcher） -->
+        <activity
+            android:name=".LoginActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <!-- 其餘頁面 -->
+        <activity android:name=".ListActivity" android:exported="false"/>
+        <activity android:name=".RegisterActivity" android:exported="false"/>
+        <activity android:name=".MainActivity" android:exported="false"/>
+        <activity android:name=".EditProfileActivity" android:exported="false"/>
+        <activity android:name=".MapEditorActivity" android:exported="false"/>
+        <activity android:name=".SpotListActivity" android:exported="false"/>
+        <activity android:name=".MapsActivity2" android:exported="false"/>
+        <activity android:name=".MapsActivity" android:exported="false"/>
+        <activity
+            android:name=".RecommendActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MapCollection"/>
+        <activity android:name=".PublicMapViewerActivity" android:exported="false"/>
+        <activity android:name=".SearchActivity" android:exported="false"/>
+        <activity android:name=".PathActivity" android:exported="false"/>
+        <activity android:name=".NewPointActivity" android:exported="false"/>
+        <activity android:name=".InformationActivity" android:exported="false"/>
+        <activity android:name=".TripPlannerActivity" android:exported="false"/>
+        <activity android:name=".FavoritesActivity" android:exported="false"/>
+        <activity android:name=".FollowingActivity" android:exported="false"/>
+        <activity android:name=".UserPublicProfileActivity" android:exported="false"/>
+        <activity android:name=".TripStopDetailActivity" android:exported="false"/>
+        <activity android:name=".AiVoiceBotActivity" />
+
+
+        <!-- 地圖選點頁 -->
+        <activity android:name=".PickLocationActivity" android:exported="false"/>
+
+        <!-- Google Maps API Key -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyC9zvDUeXQfbEvzNmxptwyA3gu9R2mBO8Q" />
+
+    </application>
+
+</manifest>

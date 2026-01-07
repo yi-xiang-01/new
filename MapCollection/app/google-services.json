@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "517864223054",
+    "project_id": "wonder-map-46630",
+    "storage_bucket": "wonder-map-46630.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:517864223054:android:0d32f30e96e28b5422ae1f",
+        "android_client_info": {
+          "package_name": "com.example.mapcollection"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBiLBebFV5SQLlJVqZglRQ3NMdM1ubpLyA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

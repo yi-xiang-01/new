@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 讓 ImageView 能套成圓形 -->
+    <style name="ShapeAppearanceOverlay.App.Circle" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">50%</item>
+    </style>
+
+    <!-- (可選) Chip 的統一樣式 -->
+    <style name="ChipStyle.Label" parent="Widget.Material3.Chip.Assist">
+        <item name="android:textColor">?attr/colorOnSurface</item>
+        <item name="chipStrokeColor">?attr/colorOutline</item>
+        <item name="chipStrokeWidth">1dp</item>
+        <item name="chipMinHeight">32dp</item>
+        <item name="chipIconVisible">false</item>
+        <item name="rippleColor">?attr/colorPrimary</item>
+    </style>
+</resources>

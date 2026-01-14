@@ -37,7 +37,6 @@ class RecommendedMapActivity : AppCompatActivity(), OnMapReadyCallback {
 
         val id = postId ?: return
 
-        // ✅ 前後端分離：改用 Retrofit 打後端 /posts/{postId}/spots
         lifecycleScope.launch {
             try {
                 val spots: List<SpotRes> = ApiClient.api.getSpots(postId = id)

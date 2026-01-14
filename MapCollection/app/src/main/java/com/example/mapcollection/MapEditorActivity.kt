@@ -30,14 +30,19 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.material.bottomsheet.BottomSheetBehavior
-import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.snackbar.BaseTransientBottomBar
+import com.google.android.material.snackbar.Snackbar
+import com.google.firebase.auth.ktx.auth
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.ktx.Firebase
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import kotlin.math.max
+import retrofit2.HttpException
 import java.io.ByteArrayOutputStream
+import kotlin.math.max
 
 /** Spot 資料（前端用） */
 data class RecSpot(
@@ -50,6 +55,9 @@ data class RecSpot(
 )
 
 class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
+
+    // ✅ trips 暫時沿用 Firestore（跟 PublicMapViewerActivity 一樣）
+    private val db = Firebase.firestore
 
     private var currentEmail: String? = null
     private var postId: String? = null           // 目前編輯的貼文
@@ -94,30 +102,60 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
         val id = postId
-        if (res.resultCode == RESULT_OK && id != null) {
-            val data = res.data ?: return@registerForActivityResult
-            val name = data.getStringExtra("spotName").orEmpty()
-            val desc = data.getStringExtra("spotDescription").orEmpty()
-            val lat = data.getDoubleExtra("latitude", .0)
-            val lng = data.getDoubleExtra("longitude", .0)
 
-            lifecycleScope.launch {
-                try {
-                    ApiClient.api.createSpot(
-                        postId = id,
-                        req = CreateSpotReq(
-                            email = currentEmail.orEmpty(),
-                            name = name,
-                            description = desc,
-                            lat = lat,
-                            lng = lng
-                        )
+        if (res.resultCode != RESULT_OK) return@registerForActivityResult
+        if (id.isNullOrBlank()) {
+            Snackbar.make(btnSave, "尚未建立地圖（postId 為空）", Snackbar.LENGTH_LONG).show()
+            return@registerForActivityResult
+        }
+
+        val data = res.data ?: return@registerForActivityResult
+        val name = data.getStringExtra("spotName").orEmpty().trim()
+        val desc = data.getStringExtra("spotDescription").orEmpty().trim()
+        val lat = data.getDoubleExtra("latitude", Double.NaN)
+        val lng = data.getDoubleExtra("longitude", Double.NaN)
+
+        // ✅ 前端先檢查參數
+        val email = currentEmail?.trim().orEmpty()
+        if (email.isBlank()) {
+            Snackbar.make(btnSave, "登入資訊遺失（email 為空），請重新登入", Snackbar.LENGTH_LONG).show()
+            return@registerForActivityResult
+        }
+        if (name.isBlank()) {
+            Snackbar.make(btnSave, "景點名稱不能空白", Snackbar.LENGTH_SHORT).show()
+            return@registerForActivityResult
+        }
+        if (lat.isNaN() || lng.isNaN()) {
+            Snackbar.make(btnSave, "座標回傳錯誤（lat/lng 無效）", Snackbar.LENGTH_LONG).show()
+            return@registerForActivityResult
+        }
+
+        lifecycleScope.launch {
+            try {
+                ApiClient.api.createSpot(
+                    postId = id,
+                    req = CreateSpotReq(
+                        email = email,
+                        name = name,
+                        description = desc,
+                        lat = lat,
+                        lng = lng
                     )
-                    Snackbar.make(btnSave, "已新增：$name", Snackbar.LENGTH_SHORT).show()
-                    fetchAndRenderSpots()
-                } catch (e: Exception) {
-                    Snackbar.make(btnSave, "新增失敗：${e.localizedMessage}", Snackbar.LENGTH_SHORT).show()
-                }
+                )
+
+                Snackbar.make(btnSave, "已新增：$name", Snackbar.LENGTH_SHORT).show()
+                fetchAndRenderSpots()
+
+            } catch (e: HttpException) {
+                val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                Snackbar.make(
+                    btnSave,
+                    "新增失敗 HTTP ${e.code()}：${body ?: e.message()}",
+                    Snackbar.LENGTH_LONG
+                ).show()
+
+            } catch (e: Exception) {
+                Snackbar.make(btnSave, "新增失敗：${e.localizedMessage}", Snackbar.LENGTH_LONG).show()
             }
         }
     }
@@ -125,10 +163,20 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // ✅ 前後端分離：用本地登入資訊判斷，不依賴 Firebase.auth.currentUser
-        currentEmail = getSharedPreferences("Account", MODE_PRIVATE)
-            .getString("LOGGED_IN_EMAIL", null)
+        // ✅ 先從 SharedPreferences 拿 email
+        val sp = getSharedPreferences("Account", MODE_PRIVATE)
+        currentEmail = sp.getString("LOGGED_IN_EMAIL", null)
 
+        // ✅ 若本地沒有 email → 用 FirebaseAuth 補上
+        if (currentEmail.isNullOrBlank()) {
+            val em = Firebase.auth.currentUser?.email
+            if (!em.isNullOrBlank()) {
+                currentEmail = em
+                sp.edit().putString("LOGGED_IN_EMAIL", em).apply()
+            }
+        }
+
+        // ✅ 仍然拿不到就回登入
         if (currentEmail.isNullOrBlank()) {
             startActivity(Intent(this, LoginActivity::class.java))
             finish()
@@ -156,7 +204,8 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
         btnEditSpot = findViewById(R.id.btnEditSpot)
         btnDeleteSpot = findViewById(R.id.btnDeleteSpot)
 
-        btnAddToTrip.setOnClickListener { selectedSpot?.let { addToTripFlow(it) } } // 先保留 Firestore 方案你後面再切
+        // ✅ 這裡改成真的加入行程
+        btnAddToTrip.setOnClickListener { selectedSpot?.let { addToTripFlow(it) } }
         btnEditSpot.setOnClickListener { selectedSpot?.let { editSpotDialog(it) } }
         btnDeleteSpot.setOnClickListener { selectedSpot?.let { confirmDeleteSpot(it) } }
 
@@ -192,6 +241,7 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
 
         // 動作
         btnSave.setOnClickListener { saveMapMetaViaBackend() }
+
         btnAdd.setOnClickListener {
             ensureMapExistsViaBackend {
                 val i = Intent(this, NewPointActivity::class.java)
@@ -199,6 +249,7 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
                 newSpotLauncher.launch(i)
             }
         }
+
         btnDelete.setOnClickListener { confirmDeleteMapViaBackend() }
     }
 
@@ -315,8 +366,7 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
                 edName.setText("")
                 edType.setText("")
             }
-        } catch (e: Exception) {
-            // 拉不到就先讓你編輯
+        } catch (_: Exception) {
             edName.setText("")
             edType.setText("")
         }
@@ -348,6 +398,9 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
                 Snackbar.make(btnSave, "已建立貼文", Snackbar.LENGTH_SHORT).show()
                 if (mapReady) fetchAndRenderSpots()
                 onReady()
+            } catch (e: HttpException) {
+                val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                Snackbar.make(btnSave, "建立貼文失敗 HTTP ${e.code()}：${body ?: e.message()}", Snackbar.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Snackbar.make(btnSave, "建立貼文失敗：${e.localizedMessage}", Snackbar.LENGTH_SHORT).show()
             }
@@ -379,6 +432,9 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
                         .show()
 
                     setResult(RESULT_OK, Intent().putExtra("UPDATED_POST_ID", id))
+                } catch (e: HttpException) {
+                    val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                    Snackbar.make(btnSave, "儲存失敗 HTTP ${e.code()}：${body ?: e.message()}", Snackbar.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     Snackbar.make(btnSave, "儲存失敗：${e.localizedMessage}", Snackbar.LENGTH_SHORT).show()
                 }
@@ -406,6 +462,9 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
                 ApiClient.api.deleteMyPost(postId = id, email = email)
                 Snackbar.make(btnSave, "已刪除", Snackbar.LENGTH_SHORT).show()
                 finish()
+            } catch (e: HttpException) {
+                val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                Snackbar.make(btnSave, "刪除失敗 HTTP ${e.code()}：${body ?: e.message()}", Snackbar.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Snackbar.make(btnSave, "刪除失敗：${e.localizedMessage}", Snackbar.LENGTH_SHORT).show()
             }
@@ -427,6 +486,9 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
                         Snackbar.make(btnDeleteSpot, "已刪除", Snackbar.LENGTH_SHORT).show()
                         sheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
                         fetchAndRenderSpots()
+                    } catch (e: HttpException) {
+                        val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                        Snackbar.make(btnDeleteSpot, "刪除失敗 HTTP ${e.code()}：${body ?: e.message()}", Snackbar.LENGTH_LONG).show()
                     } catch (e: Exception) {
                         Snackbar.make(btnDeleteSpot, "刪除失敗：${e.localizedMessage}", Snackbar.LENGTH_SHORT).show()
                     }
@@ -491,6 +553,9 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
                         )
                         Snackbar.make(btnEditSpot, "已更新景點資訊", Snackbar.LENGTH_SHORT).show()
                         fetchAndRenderSpots()
+                    } catch (e: HttpException) {
+                        val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                        Snackbar.make(btnEditSpot, "更新失敗 HTTP ${e.code()}：${body ?: e.message()}", Snackbar.LENGTH_LONG).show()
                     } catch (e: Exception) {
                         Snackbar.make(btnEditSpot, "更新失敗：${e.localizedMessage}", Snackbar.LENGTH_SHORT).show()
                     }
@@ -499,7 +564,7 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
             .show()
     }
 
-    /** 上傳景點照片：Android -> Flask (multipart) -> Storage，回傳 photoUrl */
+    /** 上傳景點照片：Android -> Flask (multipart) -> Storage */
     private fun uploadSpotPhotoViaBackend(postId: String, s: RecSpot, uri: Uri) {
         val email = currentEmail ?: return
         val bytes = decodeAndCompress(uri) ?: run {
@@ -526,6 +591,9 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
 
                 Snackbar.make(btnEditSpot, "照片已更新", Snackbar.LENGTH_SHORT).show()
                 fetchAndRenderSpots()
+            } catch (e: HttpException) {
+                val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                Snackbar.make(btnEditSpot, "上傳失敗 HTTP ${e.code()}：${body ?: e.message()}", Snackbar.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Snackbar.make(btnEditSpot, "上傳失敗：${e.localizedMessage}", Snackbar.LENGTH_SHORT).show()
             }
@@ -555,9 +623,101 @@ class MapEditorActivity : AppCompatActivity(), OnMapReadyCallback {
         return out.toByteArray()
     }
 
-    // ---------------- 你原本的 trips 流程先保留（下一刀再改成 API） ----------------
+    // ---------------- ✅ 加入行程（Firestore，跟 PublicMapViewerActivity 一樣） ----------------
+
     private fun addToTripFlow(s: RecSpot) {
-        Snackbar.make(btnAddToTrip, "這段 trips 目前仍使用 Firestore（你要下一刀再切後端我再幫你改）", Snackbar.LENGTH_SHORT).show()
+        val me = currentEmail?.trim()
+        if (me.isNullOrBlank()) {
+            Snackbar.make(btnAddToTrip, "請先登入", Snackbar.LENGTH_SHORT).show()
+            return
+        }
+
+        val trips = mutableListOf<Triple<String, String, Int>>() // tripId, title, days
+
+        fun showTripDialog() {
+            if (trips.isEmpty()) {
+                AlertDialog.Builder(this)
+                    .setMessage("你還沒有任何行程，是否前往建立？")
+                    .setPositiveButton("去建立") { _, _ ->
+                        startActivity(Intent(this, PathActivity::class.java))
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+                return
+            }
+
+            val items = trips.map { (_, title, days) -> "$title（$days 天）" }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("選擇行程")
+                .setItems(items) { _, idx ->
+                    val (tripId, _, days) = trips[idx]
+                    val nums = (1..days).map { "Day $it" }.toTypedArray()
+                    AlertDialog.Builder(this)
+                        .setTitle("放到哪一天？")
+                        .setItems(nums) { _, dayIdx ->
+                            addSpotToTrip(tripId, dayIdx + 1, s)
+                        }
+                        .show()
+                }
+                .show()
+        }
+
+        // 1) 自己建立的行程
+        db.collection("trips").whereEqualTo("ownerEmail", me).get()
+            .addOnSuccessListener { mine ->
+                mine.forEach { d ->
+                    trips.add(
+                        Triple(
+                            d.id,
+                            d.getString("title") ?: "我的行程",
+                            (d.getLong("days") ?: 7L).toInt().coerceIn(1, 7)
+                        )
+                    )
+                }
+
+                // 2) 共用行程（協作者）
+                db.collection("trips").whereArrayContains("collaborators", me).get()
+                    .addOnSuccessListener { shared ->
+                        shared.forEach { d ->
+                            trips.add(
+                                Triple(
+                                    d.id,
+                                    d.getString("title") ?: "共用行程",
+                                    (d.getLong("days") ?: 7L).toInt().coerceIn(1, 7)
+                                )
+                            )
+                        }
+                        showTripDialog()
+                    }
+                    .addOnFailureListener {
+                        showTripDialog()
+                    }
+            }
+            .addOnFailureListener {
+                Snackbar.make(btnAddToTrip, "讀取行程失敗：${it.localizedMessage}", Snackbar.LENGTH_LONG).show()
+            }
+    }
+
+    private fun addSpotToTrip(tripId: String, day: Int, s: RecSpot) {
+        val data = hashMapOf(
+            "name" to s.name.ifBlank { "未命名景點" },
+            "lat" to s.lat,
+            "lng" to s.lng,
+            "description" to s.description,
+            "photoUrl" to s.photoUrl,
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+
+        db.collection("trips").document(tripId)
+            .collection("days").document(day.toString())
+            .collection("stops")
+            .add(data)
+            .addOnSuccessListener {
+                Snackbar.make(btnAddToTrip, "已加入 Day $day", Snackbar.LENGTH_SHORT).show()
+            }
+            .addOnFailureListener {
+                Snackbar.make(btnAddToTrip, "加入失敗：${it.localizedMessage}", Snackbar.LENGTH_LONG).show()
+            }
     }
 
     companion object {

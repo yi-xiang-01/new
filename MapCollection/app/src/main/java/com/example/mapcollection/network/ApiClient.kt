@@ -5,7 +5,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 
 object ApiClient {
     // Android Studio 內建模擬器：一定要 10.0.2.2 才能連到你電腦的 localhost
-    private const val BASE_URL = "http://10.0.2.2:5000/"
+    private const val BASE_URL = "https://unconditioned-deploringly-alissa.ngrok-free.dev/"
 
     val retrofit: Retrofit by lazy {
         Retrofit.Builder()

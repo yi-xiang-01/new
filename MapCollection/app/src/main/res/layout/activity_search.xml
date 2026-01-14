@@ -49,10 +49,11 @@
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="@android:color/transparent"
-            android:contentDescription="推薦"
+            android:contentDescription="首頁"
             android:scaleType="centerInside"
-            android:src="@drawable/home2"/>
+            android:src="@drawable/ic_home"/>
 
+        <!-- 搜尋 -->
         <ImageButton
             android:id="@+id/btnSearch"
             android:layout_width="0dp"
@@ -61,26 +62,29 @@
             android:background="@android:color/transparent"
             android:contentDescription="搜尋"
             android:scaleType="centerInside"
-            android:src="@drawable/search"/>
+            android:src="@drawable/ic_search"/>
 
+        <!-- 行程規劃 -->
         <ImageButton
             android:id="@+id/btnPath"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="@android:color/transparent"
-            android:contentDescription="路徑"
+            android:contentDescription="行程規劃"
             android:scaleType="centerInside"
-            android:src="@drawable/path2"/>
+            android:src="@drawable/ic_plan"/>
 
+        <!-- 個人頁面 -->
         <ImageButton
             android:id="@+id/btnProfile"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="@android:color/transparent"
-            android:contentDescription="個人"
+            android:contentDescription="個人頁面"
             android:scaleType="centerInside"
-            android:src="@drawable/profile2"/>
+            android:src="@drawable/ic_user"/>
+
     </LinearLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>

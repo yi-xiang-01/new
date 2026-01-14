@@ -11,8 +11,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.example.mapcollection.network.ApiClient
-import com.example.mapcollection.network.TripStopRes
+import com.example.mapcollection.network.*
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import java.io.IOException
@@ -92,6 +91,7 @@ class TripPlannerActivity : AppCompatActivity() {
                 stops.getOrNull(pos)?.let { openStopDetail(it) }
             },
             onAskAi = { pos ->
+                // 手動刷新（仍保留）
                 generateSuggestionIfNeeded(pos, force = true)
             },
             onDelete = { stop ->
@@ -109,7 +109,7 @@ class TripPlannerActivity : AppCompatActivity() {
         }
 
         findViewById<ImageButton>(R.id.btnAddCollaborator).setOnClickListener {
-            Toast.makeText(this, "加協作者功能（待接後端）", Toast.LENGTH_SHORT).show()
+            showAddCollaboratorDialog()
         }
     }
 
@@ -126,7 +126,6 @@ class TripPlannerActivity : AppCompatActivity() {
         val t = tripId ?: return
         val email = myEmail ?: return
 
-        // 先清 UI（你原本習慣這樣也 OK）
         stops.clear()
         adapter.notifyDataSetChanged()
 
@@ -153,18 +152,19 @@ class TripPlannerActivity : AppCompatActivity() {
                     )
                 }.toMutableList()
 
-                // ✅ 時間排序（有時間的在前，沒時間的在後）
                 mapped.sortWith(
                     compareBy<TripStop> { timeKeyOrMax(it.startTime) }
                         .thenBy { timeKeyOrMax(it.endTime) }
-                        .thenBy { it.name } // 同時間再按名稱，避免跳動
+                        .thenBy { it.name }
                 )
 
                 stops.clear()
                 stops.addAll(mapped)
                 adapter.notifyDataSetChanged()
 
+                // 如果後端新增/更新時已自動生成 AI，這段會很少用到，但留著不壞
                 autoGenerateMissingSuggestions(limit = 3)
+
             } catch (e: Exception) {
                 Toast.makeText(
                     this@TripPlannerActivity,
@@ -217,7 +217,6 @@ class TripPlannerActivity : AppCompatActivity() {
                         val index = stops.indexOfFirst { it.id == stop.id }
                         if (index >= 0) {
                             stops.removeAt(index)
-                            // 刪掉後再排序一次（保險）
                             stops.sortWith(
                                 compareBy<TripStop> { timeKeyOrMax(it.startTime) }
                                     .thenBy { timeKeyOrMax(it.endTime) }
@@ -271,7 +270,6 @@ class TripPlannerActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 loading.dismiss()
-
                 Log.e("Gemini", "generateSuggestion failed", e)
 
                 val msg = when (e) {
@@ -279,7 +277,7 @@ class TripPlannerActivity : AppCompatActivity() {
                         val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
                         "HTTP ${e.code()} ${e.message()} ${body ?: ""}"
                     }
-                    is IOException -> "網路錯誤（請確認有開網路/模擬器可上網）：${e.message}"
+                    is IOException -> "網路錯誤：${e.message}"
                     else -> (e.message ?: e.toString())
                 }
 
@@ -294,21 +292,77 @@ class TripPlannerActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 把 "HH:mm" 轉成可排序的分鐘數。
-     * 空白/--:--/格式錯誤 → 排最後（Int.MAX_VALUE）
-     */
     private fun timeKeyOrMax(hhmm: String?): Int {
         val t = (hhmm ?: "").trim()
         if (t.isBlank() || t == "--:--") return Int.MAX_VALUE
-
         val parts = t.split(":")
         if (parts.size != 2) return Int.MAX_VALUE
-
         val h = parts[0].toIntOrNull() ?: return Int.MAX_VALUE
         val m = parts[1].toIntOrNull() ?: return Int.MAX_VALUE
         if (h !in 0..23 || m !in 0..59) return Int.MAX_VALUE
-
         return h * 60 + m
+    }
+
+    private fun showAddCollaboratorDialog() {
+        val t = tripId ?: run {
+            Toast.makeText(this, "tripId 為空，無法新增共編者", Toast.LENGTH_LONG).show()
+            return
+        }
+        val ownerEmail = myEmail ?: run {
+            Toast.makeText(this, "email 為空，請重新登入", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val input = android.widget.EditText(this).apply {
+            hint = "輸入共編者 Email"
+            inputType = android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("新增共編者")
+            .setView(input)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("新增") { _, _ ->
+                val collaboratorEmail = input.text?.toString()?.trim().orEmpty()
+                if (collaboratorEmail.isBlank()) {
+                    Toast.makeText(this, "Email 不能空白", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                if (collaboratorEmail.equals(ownerEmail, ignoreCase = true)) {
+                    Toast.makeText(this, "不能新增自己", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                lifecycleScope.launch {
+                    try {
+                        ApiClient.api.addTripCollaborator(
+                            tripId = t,
+                            req = AddTripCollaboratorReq(
+                                email = ownerEmail,
+                                collaboratorEmail = collaboratorEmail
+                            )
+                        )
+                        Toast.makeText(
+                            this@TripPlannerActivity,
+                            "已新增共編者：$collaboratorEmail",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } catch (e: HttpException) {
+                        val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                        Toast.makeText(
+                            this@TripPlannerActivity,
+                            "新增失敗 HTTP ${e.code()}：${body ?: e.message()}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } catch (e: Exception) {
+                        Toast.makeText(
+                            this@TripPlannerActivity,
+                            "新增失敗：${e.localizedMessage}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+            .show()
     }
 }

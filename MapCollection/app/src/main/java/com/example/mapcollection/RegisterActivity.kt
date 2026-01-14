@@ -9,7 +9,10 @@ import com.example.mapcollection.databinding.ActivityRegisterBinding
 import com.example.mapcollection.network.ApiClient
 import com.example.mapcollection.network.RegisterReq
 import com.google.android.material.snackbar.Snackbar
+import com.google.firebase.auth.ktx.auth
+import com.google.firebase.ktx.Firebase
 import kotlinx.coroutines.launch
+import retrofit2.HttpException
 
 class RegisterActivity : AppCompatActivity() {
 
@@ -20,14 +23,14 @@ class RegisterActivity : AppCompatActivity() {
         binding = ActivityRegisterBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        binding.btnRegister.setOnClickListener { registerUserViaBackend() }
+        binding.btnRegister.setOnClickListener { registerUserViaBackendThenLogin() }
         binding.tvGoLogin.setOnClickListener {
             startActivity(Intent(this, LoginActivity::class.java))
             finish()
         }
     }
 
-    private fun registerUserViaBackend() {
+    private fun registerUserViaBackendThenLogin() {
         val email = binding.etEmail.text?.toString()?.trim().orEmpty()
         val pwd = binding.etPassword.text?.toString().orEmpty()
         val confirmPwd = binding.etConfirmPassword.text?.toString().orEmpty()
@@ -38,29 +41,42 @@ class RegisterActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                // ✅ 呼叫 Flask：POST /auth/register
-                ApiClient.api.register(
-                    RegisterReq(
-                        email = email,
-                        password = pwd
-                    )
-                )
+                // ✅ 1) 先打後端：建立 Firebase Auth 帳號 + Firestore users/{email}
+                ApiClient.api.register(RegisterReq(email = email, password = pwd))
 
-                // ✅ 註冊成功後：先把 email 存起來（你目前 app 的登入狀態是靠 LOGGED_IN_EMAIL）
-                getSharedPreferences("Account", MODE_PRIVATE)
-                    .edit()
-                    .putString("LOGGED_IN_EMAIL", email)
-                    .apply()
+                // ✅ 2) 註冊成功後：立刻用 Firebase Auth 登入，讓狀態一致
+                Firebase.auth.signInWithEmailAndPassword(email, pwd)
+                    .addOnSuccessListener {
+                        rememberEmail(email)
+                        show("註冊成功！請先設定個人資料")
+                        startActivity(Intent(this@RegisterActivity, EditProfileActivity::class.java))
+                        finish()
+                    }
+                    .addOnFailureListener { e ->
+                        // 後端已註冊成功，但這裡登入失敗（通常是網路/設定）
+                        binding.btnRegister.isEnabled = true
+                        show("註冊成功，但自動登入失敗：${e.localizedMessage}")
+                    }
 
-                show("註冊成功！請先設定個人資料")
-                startActivity(Intent(this@RegisterActivity, EditProfileActivity::class.java))
-                finish()
-
-            } catch (e: Exception) {
-                show("註冊失敗：${e.localizedMessage}")
+            } catch (e: HttpException) {
                 binding.btnRegister.isEnabled = true
+                if (e.code() == 409) {
+                    show("這個 Email 已註冊過了")
+                } else {
+                    show("註冊失敗（HTTP ${e.code()}）：${e.message()}")
+                }
+            } catch (e: Exception) {
+                binding.btnRegister.isEnabled = true
+                show("註冊失敗：${e.localizedMessage}")
             }
         }
+    }
+
+    private fun rememberEmail(email: String) {
+        getSharedPreferences("Account", MODE_PRIVATE)
+            .edit()
+            .putString("LOGGED_IN_EMAIL", email)
+            .apply()
     }
 
     private fun validate(email: String, pwd: String, confirmPwd: String): Boolean {

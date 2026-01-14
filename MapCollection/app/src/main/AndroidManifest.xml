@@ -58,6 +58,7 @@
 
         <!-- 地圖選點頁 -->
         <activity android:name=".PickLocationActivity" android:exported="false"/>
+        <activity android:name=".PickLocationNewActivity" android:exported="false"/>
 
         <!-- Google Maps API Key -->
         <meta-data

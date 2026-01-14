@@ -115,13 +115,6 @@ data class RenameTripReq(val email: String, val title: String)
 
 data class ChangeTripDatesReq(val email: String, val startMillis: Long, val endMillis: Long)
 
-data class UpdateTripReq(
-    val email: String,
-    val title: String,
-    val startMillis: Long,
-    val endMillis: Long
-)
-
 data class PublicPostRes(
     val id: String,
     val ownerEmail: String,
@@ -136,7 +129,6 @@ data class RegisterReq(
     val email: String,
     val password: String
 )
-
 
 data class SearchPostRes(
     val id: String,
@@ -168,7 +160,6 @@ data class TripStopRes(
     val createdAtMillis: Long = 0L
 )
 
-
 data class AddTripStopReq(
     val lat: Double,
     val lng: Double,
@@ -190,27 +181,47 @@ data class AiVoiceReq(
     val lng: Double?
 )
 
+data class AddTripCollaboratorReq(
+    val email: String,
+    val collaboratorEmail: String
+)
+
 data class AiVoiceRes(val text: String)
-
-
 data class AiTextRes(val text: String)
 
+// ✅ 更新 stop 用（對應你後端 PUT /me/trips/{tripId}/days/{day}/stops/{stopId}）
+data class UpdateTripStopReq(
+    val name: String? = null,
+    val description: String? = null,
+    val category: String? = null,
+    val startTime: String? = null,
+    val endTime: String? = null,
+    val lat: Double? = null,
+    val lng: Double? = null,
+    val openingHours: Any? = null
+)
+
+data class UpdateTripStopRes(
+    val ok: Boolean = true,
+    val refreshed: Boolean = false,
+    val aiSuggestion: String? = null,
+    val aiError: String? = null
+)
 
 interface ApiService {
-    // =====search=====
+
+    // ===== Search =====
     @GET("posts/search")
     suspend fun searchPosts(
         @Query("q") q: String,
         @Query("limit") limit: Int = 300
     ): List<SearchPostRes>
 
-
-    // ===== Public Posts（RecommendActivity 用）=====
+    // ===== Public Posts =====
     @GET("posts/public")
     suspend fun getPublicPosts(
         @Query("limit") limit: Int = 300
     ): List<PublicPostRes>
-
 
     // ===== Profile =====
     @GET("me/profile")
@@ -226,11 +237,10 @@ interface ApiService {
         @Part photo: MultipartBody.Part
     ): UploadPhotoRes
 
-    // ===== Favorites =====
+    // ===== Favorites / Following（你原本有的型別要自己存在）=====
     @GET("me/favorites")
     suspend fun getMyFavorites(@Query("email") email: String): List<FavPost>
 
-    // ===== Following =====
     @GET("me/following")
     suspend fun getMyFollowing(@Query("email") email: String): List<FollowUser>
 
@@ -238,7 +248,10 @@ interface ApiService {
     @POST("ai/ask")
     suspend fun aiAsk(@Body req: AiAskReq): AiAskRes
 
-    // ===== My Posts（MainActivity / MapEditorActivity 用）=====
+    @POST("ai/voice")
+    suspend fun aiVoice(@Body req: AiVoiceReq): AiVoiceRes
+
+    // ===== My Posts =====
     @GET("me/posts")
     suspend fun getMyPosts(@Query("email") email: String): List<MyPostRes>
 
@@ -263,7 +276,7 @@ interface ApiService {
         @Query("email") email: String
     ): OkRes
 
-    // ===== Spots（MapEditorActivity 用）=====
+    // ===== Spots =====
     @GET("posts/{postId}/spots")
     suspend fun getSpots(@Path("postId") postId: String): List<SpotRes>
 
@@ -287,7 +300,6 @@ interface ApiService {
         @Query("email") email: String
     ): OkRes
 
-    // ===== Spot Photo（MapEditorActivity 用）=====
     @Multipart
     @POST("posts/{postId}/spots/{spotId}/photo")
     suspend fun uploadSpotPhoto(
@@ -322,13 +334,13 @@ interface ApiService {
         @Query("email") email: String
     ): OkRes
 
+    // ===== Auth =====
     @POST("auth/register")
     suspend fun register(@Body req: RegisterReq): OkRes
 
+    // ===== Public user =====
     @GET("users/{email}/public")
-    suspend fun getUserPublicProfile(
-        @Path("email") email: String
-    ): PublicUserProfileRes
+    suspend fun getUserPublicProfile(@Path("email") email: String): PublicUserProfileRes
 
     @GET("users/{email}/posts")
     suspend fun getUserPostsPublic(
@@ -336,12 +348,29 @@ interface ApiService {
         @Query("limit") limit: Int = 300
     ): List<PublicPostRes>
 
+    // ===== Trip Stops =====
     @GET("me/trips/{tripId}/days/{day}/stops")
     suspend fun getTripDayStops(
         @Path("tripId") tripId: String,
         @Path("day") day: Int,
         @Query("email") email: String
     ): List<TripStopRes>
+
+    @POST("me/trips/{tripId}/days/{day}/stops")
+    suspend fun addTripStop(
+        @Path("tripId") tripId: String,
+        @Path("day") day: Int,
+        @Query("email") email: String,
+        @Body body: AddTripStopReq
+    ): Any  // 你後端回傳 {id: "..."}，
+
+    @DELETE("trips/{tripId}/days/{day}/stops/{stopId}")
+    suspend fun deleteTripStop(
+        @Path("tripId") tripId: String,
+        @Path("day") day: Int,
+        @Path("stopId") stopId: String,
+        @Query("email") email: String
+    ): OkRes
 
     @POST("me/trips/{tripId}/days/{day}/stops/{stopId}/ai")
     suspend fun generateStopAi(
@@ -351,27 +380,28 @@ interface ApiService {
         @Query("email") email: String
     ): AiTextRes
 
-    @DELETE("trips/{tripId}/days/{day}/stops/{stopId}")
-    suspend fun deleteTripStop(
+    @PUT("me/trips/{tripId}/days/{day}/stops/{stopId}")
+    suspend fun updateTripStop(
         @Path("tripId") tripId: String,
         @Path("day") day: Int,
         @Path("stopId") stopId: String,
-        @Query("email") email: String
-    )
+        @Query("email") email: String,
+        @Body req: UpdateTripStopReq
+    ): UpdateTripStopRes
 
-    @POST("me/trips/{tripId}/days/{day}/stops")
-    suspend fun addTripStop(
+    @Multipart
+    @POST("trips/{tripId}/days/{day}/stops/{stopId}/photo")
+    suspend fun uploadTripStopPhoto(
         @Path("tripId") tripId: String,
         @Path("day") day: Int,
-        @Query("email") email: String,
-        @Body body: AddTripStopReq
-    )
+        @Path("stopId") stopId: String,
+        @Part("email") email: RequestBody,
+        @Part photo: MultipartBody.Part
+    ): UploadPhotoRes
 
-    @POST("ai/voice")
-    suspend fun aiVoice(@Body req: AiVoiceReq): AiVoiceRes
-
-
-
-
-
+    @POST("me/trips/{tripId}/collaborators")
+    suspend fun addTripCollaborator(
+        @Path("tripId") tripId: String,
+        @Body req: AddTripCollaboratorReq
+    ): OkRes
 }

@@ -63,7 +63,7 @@ class NewPointActivity : AppCompatActivity() {
         btnUploadPhoto.setOnClickListener { imagePicker.launch("image/*") }
 
         btnPickCoord.setOnClickListener {
-            val i = Intent(this, PickLocationActivity::class.java).apply {
+            val i = Intent(this, PickLocationNewActivity::class.java).apply {
                 // ✅ 如果已選過，帶回去當預設點（key 也統一）
                 if (selectedLat != null && selectedLng != null) {
                     putExtra("latitude", selectedLat!!)

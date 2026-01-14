@@ -8,6 +8,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
@@ -46,6 +47,34 @@ class AiVoiceBotActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         private const val REQ_RECORD_AUDIO = 101
     }
 
+    // ===== 機器人狀態 =====
+    private enum class RobotState { IDLE, LISTENING, TALKING }
+    private var robotState: RobotState = RobotState.IDLE
+
+    private fun setRobotState(state: RobotState) {
+        if (robotState == state) return
+        robotState = state
+
+        when (state) {
+            RobotState.IDLE -> {
+                // 沒有 idle.json 就先用 listening 當待機畫面
+                lottie.setAnimation("listening.json")
+                lottie.repeatCount = LottieDrawable.INFINITE
+                lottie.pauseAnimation()
+            }
+            RobotState.LISTENING -> {
+                lottie.setAnimation("listening.json")
+                lottie.repeatCount = LottieDrawable.INFINITE
+                lottie.playAnimation()
+            }
+            RobotState.TALKING -> {
+                lottie.setAnimation("talking.json")
+                lottie.repeatCount = LottieDrawable.INFINITE
+                lottie.playAnimation()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_ai_voice_bot)
@@ -70,21 +99,35 @@ class AiVoiceBotActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         tvSpotTitle.text = spotName?.takeIf { it.isNotBlank() } ?: "AI 導遊"
         tvTranscript.text = "（按下麥克風開始說話）"
 
-        // ✅ 不用 XML 的 lottie_autoPlay / lottie_loop（避免你之前的 linking error）
+        // ✅ 初始化 Lottie（不要用 XML 的 lottie_autoPlay / lottie_loop）
         lottie.repeatCount = LottieDrawable.INFINITE
-        // 如果你有 lottie 檔案（放 app/src/main/assets/robot.json），再開這行
-        // lottie.setAnimation("robot.json")
+        setRobotState(RobotState.IDLE)
 
+        // ✅ 初始化 TTS
         tts = TextToSpeech(this, this)
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                runOnUiThread { setRobotState(RobotState.TALKING) }
+            }
 
-        btnMic.setOnClickListener {
-            ensureMicPermissionAndStart()
-        }
+            override fun onDone(utteranceId: String?) {
+                runOnUiThread { setRobotState(RobotState.IDLE) }
+            }
+
+            override fun onError(utteranceId: String?) {
+                runOnUiThread { setRobotState(RobotState.IDLE) }
+            }
+        })
+
+        btnMic.setOnClickListener { ensureMicPermissionAndStart() }
     }
 
     private fun ensureMicPermissionAndStart() {
-        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
         if (!granted) {
             ActivityCompat.requestPermissions(
                 this,
@@ -120,14 +163,17 @@ class AiVoiceBotActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (speechRecognizer == null) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
                 setRecognitionListener(object : RecognitionListener {
+
                     override fun onReadyForSpeech(params: Bundle?) {
                         tvTranscript.text = "（請開始說話…）"
-                        lottie.playAnimation()
+                        setRobotState(RobotState.LISTENING)
                     }
 
                     override fun onResults(results: Bundle?) {
-                        lottie.pauseAnimation()
-                        val texts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        setRobotState(RobotState.IDLE)
+
+                        val texts =
+                            results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         val userText = texts?.firstOrNull().orEmpty().trim()
 
                         if (userText.isBlank()) {
@@ -140,7 +186,7 @@ class AiVoiceBotActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
 
                     override fun onError(error: Int) {
-                        lottie.pauseAnimation()
+                        setRobotState(RobotState.IDLE)
                         tvTranscript.text = "（語音辨識失敗，請再按一次麥克風）"
                     }
 
@@ -159,10 +205,11 @@ class AiVoiceBotActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-TW")
             putExtra(RecognizerIntent.EXTRA_PROMPT, "請說出你想問的問題")
         }
+
         speechRecognizer?.startListening(intent)
     }
 
-    /** ✅ 前後端分離：手機只送文字+上下文，後端組 prompt / 呼叫 Gemini */
+    /** ✅ 前後端分離：手機只送文字 + 上下文，後端組 prompt / 呼叫 Gemini */
     private fun askAiViaBackend(userText: String) {
         lifecycleScope.launch {
             try {
@@ -182,18 +229,25 @@ class AiVoiceBotActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 tvTranscript.text = "${tvTranscript.text}\n\nAI：$answer"
                 speak(answer)
             } catch (e: Exception) {
-                Toast.makeText(this@AiVoiceBotActivity, "詢問失敗：${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                Toast.makeText(
+                    this@AiVoiceBotActivity,
+                    "詢問失敗：${e.localizedMessage}",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
 
     private fun speak(text: String) {
+        // 觸發 UtteranceProgressListener，開始說話會自動切到 TALKING 動畫
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "ai_reply")
     }
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts?.language = Locale.TAIWAN
+        } else {
+            Toast.makeText(this, "TTS 初始化失敗", Toast.LENGTH_SHORT).show()
         }
     }
 

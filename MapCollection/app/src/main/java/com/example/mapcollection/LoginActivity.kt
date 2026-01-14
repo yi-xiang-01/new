@@ -4,15 +4,12 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Patterns
 import androidx.appcompat.app.AppCompatActivity
-import androidx.lifecycle.lifecycleScope
 import com.example.mapcollection.databinding.ActivityLoginBinding
 import com.google.android.material.snackbar.Snackbar
 import com.google.firebase.auth.ktx.auth
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
-import kotlinx.coroutines.launch
-import com.example.mapcollection.network.ApiClient
 
 class LoginActivity : AppCompatActivity() {
 
@@ -25,14 +22,15 @@ class LoginActivity : AppCompatActivity() {
         binding = ActivityLoginBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-
-
-        // ✅ 已登入就直接走
+        // ✅ 只相信 Firebase Auth 是否已登入
         val current = auth.currentUser
         if (current?.email != null) {
             rememberEmail(current.email!!)
             checkIfFirstLogin(current.email!!)
             return
+        } else {
+            // 若本地殘留 email（理論上登出後會清），保險清掉避免狀態混亂
+            getSharedPreferences("Account", MODE_PRIVATE).edit().remove("LOGGED_IN_EMAIL").apply()
         }
 
         binding.btnLogin.setOnClickListener { loginUser() }
@@ -47,7 +45,7 @@ class LoginActivity : AppCompatActivity() {
         val pwd = binding.etPassword.text?.toString().orEmpty()
         if (!validate(email, pwd)) return
 
-        // 1) 先用 Firebase Auth 正常登入
+        // 1) Firebase Auth 登入
         auth.signInWithEmailAndPassword(email, pwd)
             .addOnSuccessListener {
                 rememberEmail(email)
@@ -55,7 +53,7 @@ class LoginActivity : AppCompatActivity() {
                 checkIfFirstLogin(email)
             }
             .addOnFailureListener {
-                // 2) 失敗 → 試舊資料（Firestore）並自動遷移
+                // 2) 失敗 → 試舊資料（Firestore）並自動遷移（你原本的功能保留）
                 migrateLegacyUserIfMatch(email, pwd)
             }
     }
@@ -67,12 +65,9 @@ class LoginActivity : AppCompatActivity() {
             .addOnSuccessListener { doc ->
                 val legacyPwd = doc.getString("password")
                 if (doc.exists() && legacyPwd == pwd) {
-                    // 幫他在 Auth 建帳（一次性）
                     auth.createUserWithEmailAndPassword(email, pwd)
                         .addOnSuccessListener { res ->
                             val uid = res.user?.uid ?: ""
-
-                            // 記錄 uid（方便 Storage 用 uid 授權）
                             docRef.set(mapOf("uid" to uid), SetOptions.merge())
                                 .addOnCompleteListener {
                                     rememberEmail(email)
@@ -92,7 +87,7 @@ class LoginActivity : AppCompatActivity() {
             }
     }
 
-    // ✅ 用 Firestore 的 firstLogin 決定導向
+    // 用 Firestore 的 firstLogin 決定導向
     private fun checkIfFirstLogin(email: String) {
         db.collection("users").document(email).get()
             .addOnSuccessListener { doc ->
@@ -106,7 +101,6 @@ class LoginActivity : AppCompatActivity() {
             }
             .addOnFailureListener { e ->
                 show("檢查個人資料失敗：${e.localizedMessage}")
-                // fallback：先進主頁
                 startActivity(Intent(this, MainActivity::class.java).putExtra("USER_EMAIL", email))
                 finish()
             }

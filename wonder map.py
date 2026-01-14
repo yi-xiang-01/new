@@ -8,6 +8,7 @@ from firebase_admin import credentials, firestore, auth, storage
 from firebase_admin import firestore as admin_firestore
 from firebase_admin.exceptions import FirebaseError
 import datetime
+from firebase_admin import auth as admin_auth
 
 # ===== Flask & CORS =====
 try:
@@ -37,7 +38,7 @@ db = firestore.client()
 bucket = storage.bucket()
 
 ## ===== Gemini AI 設定 =====
-GEMINI_MODEL = "models/gemini-2.0-flash"  # 你也可以換成 models/gemini-2.5-flash
+GEMINI_MODEL = "models/gemini-2.0-flash"  
 
 def get_gemini_api_key() -> str:
     """每次呼叫都從環境變數讀取，避免 reloader/ngrok/子程序拿不到"""
@@ -112,9 +113,136 @@ def is_likely_open(opening_hours: dict, visit_hhmm: str):
 
     return False
 
+def minutes_to_hhmm(mins: int) -> str:
+    mins = mins % (24 * 60)
+    h = mins // 60
+    m = mins % 60
+    return f"{h:02d}:{m:02d}"
+
+def haversine_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    from math import radians, sin, cos, sqrt, atan2
+    r = 6371000.0
+    dlat = radians(lat2 - lat1)
+    dlng = radians(lng2 - lng1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return r * c
+
+def estimate_travel_minutes_by_distance(meters: float, mode: str = "drive") -> int:
+    # 你可自行調：drive 平均 25~35km/h 都合理
+    speed_kmh = 5.0 if mode == "walk" else (18.0 if mode == "transit" else 30.0)
+    minutes = (meters / 1000.0) / speed_kmh * 60.0
+    buffer_min = 3 if mode in ("walk", "transit") else 8  # 紅綠燈/找車位緩衝
+    import math
+    return int(math.ceil(minutes)) + buffer_min
+
+def sort_key_for_stop(stop: dict):
+    st = parse_hhmm_to_minutes((stop.get("startTime") or "").strip())
+    et = parse_hhmm_to_minutes((stop.get("endTime") or "").strip())
+    return (
+        st if st is not None else 10**9,
+        et if et is not None else 10**9,
+        (stop.get("name") or "")
+    )
+
+def get_next_stop_info(trip_id: str, day: int, stop_id: str):
+    """
+    回傳：(next_stop_dict_or_none, dist_m, travel_min, late_flag, travel_hint_text)
+    late_flag: True / False / None(資料不足)
+    """
+    try:
+        col = db.collection("trips").document(trip_id).collection("days").document(str(day)).collection("stops")
+        docs = col.get()
+
+        stops = []
+        for d in docs:
+            s = d.to_dict() or {}
+            s["_id"] = d.id
+            stops.append(s)
+
+        stops.sort(key=sort_key_for_stop)
+
+        idx = next((i for i, s in enumerate(stops) if s.get("_id") == stop_id), -1)
+        if idx < 0 or idx >= len(stops) - 1:
+            return None, None, None, None, "【移動/遲到判斷】這是當天最後一站或找不到下一站，無法計算下一段移動時間。"
+
+        cur = stops[idx]
+        nxt = stops[idx + 1]
+
+        cur_lat = float(cur.get("lat") or 0.0)
+        cur_lng = float(cur.get("lng") or 0.0)
+        nxt_lat = float(nxt.get("lat") or 0.0)
+        nxt_lng = float(nxt.get("lng") or 0.0)
+
+        if (cur_lat == 0.0 and cur_lng == 0.0) or (nxt_lat == 0.0 and nxt_lng == 0.0):
+            return nxt, None, None, None, "【移動/遲到判斷】缺少座標，無法計算兩站距離與移動時間。"
+
+        dist_m = haversine_meters(cur_lat, cur_lng, nxt_lat, nxt_lng)
+        travel_min = estimate_travel_minutes_by_distance(dist_m, mode="drive")
+
+        # 出發時間：優先用本站 endTime，沒有就用 startTime
+        depart_src = (cur.get("endTime") or cur.get("startTime") or "").strip()
+        next_start_src = (nxt.get("startTime") or "").strip()
+        depart_min = parse_hhmm_to_minutes(depart_src) if depart_src else None
+        next_start_min = parse_hhmm_to_minutes(next_start_src) if next_start_src else None
+
+        km = dist_m / 1000.0
+
+        if depart_min is None or next_start_min is None:
+            return nxt, dist_m, travel_min, None, (
+                f"【移動/遲到判斷】下一站「{(nxt.get('name') or '').strip() or '未命名地點'}」距離約 {km:.1f} km，"
+                f"預估移動 {travel_min} 分鐘（含緩衝）。但缺少完整時間（本站出發或下一站開始時間），無法判斷是否會遲到。"
+            )
+
+        arrive_min = depart_min + travel_min
+        late = arrive_min > next_start_min
+        next_name = (nxt.get("name") or "").strip() or "下一站"
+        base = f"【下一站】{next_name}｜約 {km:.1f} km｜車程約 {travel_min} 分（含緩衝）"
+
+        
+
+        if late:
+            hint = (
+                f"{base} ⚠️ 可能趕不上："
+                f"{minutes_to_hhmm(depart_min)} 出發約 {minutes_to_hhmm(arrive_min)} 抵達，"
+                f"但行程安排為 {next_start_src}。"
+                )
+        else:
+            hint = (
+                f"{base} ✅ 時間可行："
+                f"{minutes_to_hhmm(depart_min)} 出發約 {minutes_to_hhmm(arrive_min)} 抵達（{next_start_src}）。"
+            )
+
+        return nxt, dist_m, travel_min, late, hint
+
+    except Exception as e:
+        return None, None, None, None, f"【移動/遲到判斷】計算失敗：{e}"
+    
+
+PLACES_KEY = os.environ.get("GOOGLE_PLACES_API_KEY")
+
+def fetch_place_details(place_id: str):
+    if not PLACES_KEY or not place_id:
+        return None
+
+    url = "https://maps.googleapis.com/maps/api/place/details/json"
+    params = {
+        "place_id": place_id,
+        "fields": "opening_hours,current_opening_hours,name",
+        "language": "zh-TW",
+        "key": PLACES_KEY
+    }
+
+    r = requests.get(url, params=params, timeout=10)
+    if r.status_code != 200:
+        return None
+
+    data = r.json()
+    return data.get("result")
+
 
 print("GEMINI_API_KEY len =", len(get_gemini_api_key()))
-print("GEMINI_MODEL =", GEMINI_MODEL)
+print("GEMINI_MODEL =", PLACES_KEY)
 
 
 # ===== 測試 API =====
@@ -615,6 +743,36 @@ def _trip_doc_to_res(doc):
         "days": int(d.get("days", 7) or 7),
     }
 
+@app.post("/me/trips/<trip_id>/collaborators")
+def add_trip_collaborator(trip_id):
+    data = request.get_json(force=True) or {}
+    email = (data.get("email") or "").strip()
+    collab = (data.get("collaboratorEmail") or "").strip()
+
+    if not email or not collab:
+        return jsonify(error="email and collaboratorEmail are required"), 400
+    if email == collab:
+        return jsonify(error="cannot add yourself"), 400
+
+    ref = db.collection("trips").document(trip_id)
+    snap = ref.get()
+    if not snap.exists:
+        return jsonify(error="trip not found"), 404
+
+    trip = snap.to_dict() or {}
+    owner = (trip.get("ownerEmail") or "").strip()
+
+
+    if email != owner:
+        return jsonify(error="only owner can add collaborators"), 403
+
+
+    ref.update({
+        "collaborators": admin_firestore.ArrayUnion([collab])
+    })
+
+    return jsonify(ok=True)
+
 # GET /me/trips?email=xxx  （我擁有 + 我是協作者）
 @app.get("/me/trips")
 def get_my_trips():
@@ -662,13 +820,13 @@ def create_trip():
     days = max(1, min(7, days))
 
     doc = {
-        "ownerEmail": email,
-        "title": title,
-        "days": days,
-        "collaborators": [],
-        "createdAt": admin_firestore.SERVER_TIMESTAMP,
-        "startDate": admin_firestore.Timestamp.from_millis(start_ms),
-        "endDate": admin_firestore.Timestamp.from_millis(end_ms),
+    "ownerEmail": email,
+    "title": title,
+    "days": days,
+    "collaborators": [],
+    "createdAt": admin_firestore.SERVER_TIMESTAMP,
+    "startDate": datetime.datetime.fromtimestamp(start_ms / 1000),
+    "endDate": datetime.datetime.fromtimestamp(end_ms / 1000),
     }
 
     ref = db.collection("trips").document()
@@ -851,6 +1009,7 @@ def register():
     
     # ===== Search Posts API（給 SearchActivity 用）=====
 # GET /posts/search?q=xxx&limit=300
+
 @app.get("/posts/search")
 def search_posts():
     q = (request.args.get("q") or "").strip()
@@ -1059,10 +1218,198 @@ def add_trip_day_stop(trip_id: str, day: int):
 
     return jsonify(id=ref.id), 200
 
+@app.post("/trips/<trip_id>/days/<int:day>/stops/<stop_id>/photo")
+def upload_trip_stop_photo(trip_id: str, day: int, stop_id: str):
+    email = (request.form.get("email") or "").strip()
+    photo = request.files.get("photo")
 
+    if not email or not photo:
+        return jsonify(error="email and photo are required"), 400
+
+    day = max(1, min(day, 7))
+
+    # 權限檢查：owner 或 collaborator 才能上傳
+    trip_ref = db.collection("trips").document(trip_id)
+    trip_doc = trip_ref.get()
+    if not trip_doc.exists:
+        return jsonify(error="trip not found"), 404
+
+    trip = trip_doc.to_dict() or {}
+    owner = trip.get("ownerEmail")
+    collaborators = trip.get("collaborators", []) or []
+
+    if email != owner and email not in collaborators:
+        return jsonify(error="permission denied"), 403
+
+    # stop 是否存在
+    stop_ref = trip_ref \
+        .collection("days").document(str(day)) \
+        .collection("stops").document(stop_id)
+
+    stop_doc = stop_ref.get()
+    if not stop_doc.exists:
+        return jsonify(error="stop not found"), 404
+
+    # 上傳到 Storage
+    filename = f"stop_{stop_id}_{uuid.uuid4().hex}.jpg"
+    storage_path = f"trips/{trip_id}/days/{day}/stops/{stop_id}/{filename}"
+
+    blob = bucket.blob(storage_path)
+    blob.upload_from_file(photo, content_type="image/jpeg")
+
+    # 簽名網址（7天）—測試很方便
+    url = blob.generate_signed_url(expiration=60 * 60 * 24 * 7)
+
+    # 寫回 Firestore
+    stop_ref.set(
+        {"photoUrl": url, "updatedAt": admin_firestore.SERVER_TIMESTAMP},
+        merge=True
+    )
+
+    return jsonify(photoUrl=url), 200
 
 # POST /me/trips/<tripId>/days/<day>/stops/<stopId>/ai?email=xxx
 # body: { "prompt": "....(optional)" }
+AI_AFFECT_FIELDS = {
+    "name",
+    "description",
+    "category",
+    "startTime",
+    "endTime",
+    "lat",
+    "lng",
+    "openingHours",
+}
+
+def build_stop_ai_prompt(trip_id: str, day: int, stop_id: str) -> tuple[str, any]:
+    """
+    讀取 stop + 組合 prompt
+    回傳：(prompt, stop_ref)
+    """
+    day = max(1, min(day, 7))
+
+    stop_ref = (
+        db.collection("trips").document(trip_id)
+        .collection("days").document(str(day))
+        .collection("stops").document(stop_id)
+    )
+    stop_doc = stop_ref.get()
+    if not stop_doc.exists:
+        raise RuntimeError("stop not found")
+
+    s = stop_doc.to_dict() or {}
+
+    
+
+    place_id = s.get("placeId")
+    opening_hours = s.get("openingHours")
+
+    if not opening_hours and place_id:
+        opening_hours = fetch_place_opening_hours(place_id)
+
+        stop_ref.set(
+        {
+            "openingHoursSource": "google_places",
+            "openingHoursFetchedAt": admin_firestore.SERVER_TIMESTAMP,
+            "openingHoursFetchOk": bool(opening_hours),
+        },
+        merge=True
+    )
+
+        if opening_hours:
+            stop_ref.set(
+                {
+                    "openingHours": opening_hours,
+                    },
+                    merge=True
+                    )
+            s["openingHours"] = opening_hours
+
+
+    
+
+    # ===== 組內容 =====
+    name = (s.get("name") or "").strip() or "未命名地點"
+    category = (s.get("category") or "景點").strip() or "景點"
+    start_time = (s.get("startTime") or "").strip()
+    end_time = (s.get("endTime") or "").strip()
+    time_part = f"{start_time} - {end_time}" if start_time and end_time else "未指定時間"
+    lat = s.get("lat") or 0.0
+    lng = s.get("lng") or 0.0
+    desc = (s.get("description") or "").strip() or "無"
+
+    # ===== 營業時間判斷 =====
+    opening_hours = s.get("openingHours")
+    open_state = None
+    if opening_hours and start_time:
+        open_state = is_likely_open(opening_hours, start_time)
+
+    if open_state is True:
+        open_hint = "【營業狀態】你安排的時間可能在營業時間內，請正常給建議。"
+    elif open_state is False:
+        open_hint = "【營業狀態】你安排的時間可能不在營業時間內，請明確提醒「可能不在營業時間」，並給替代方案（改時間或附近備案）。"
+    else:
+        open_hint = "【營業狀態】查不到確切營業時間，請不要亂猜，改成提醒使用者自行確認營業時間。"
+
+    # ===== 下一站距離/遲到風險判斷 =====
+    next_stop, dist_m, travel_min, late_flag, travel_hint = get_next_stop_info(trip_id, day, stop_id)
+
+    if late_flag is True:
+        late_rule = "【遲到規則】你必須明確提醒「可能遲到」，並提供至少 2 個可行解法（例如：縮短本站停留、調整下一站開始時間、改變交通方式、或把下一站改成備案）。"
+    elif late_flag is False:
+        late_rule = "【遲到規則】時間看起來可行，但仍可給 1 句提醒（例如：預留緩衝、注意路況）。"
+    else:
+        late_rule = "【遲到規則】資料不足無法判斷遲到，請用保守語氣提醒使用者自行確認路況與時間。"
+
+    prompt = f"""
+你是一位旅遊行程規劃助理，請用「繁體中文」為下面這個行程點產生一段「很像旅遊 APP 卡片內的建議文字」。
+
+{open_hint}
+
+{travel_hint}
+{late_rule}
+
+【地點】{name}
+【類型】{category}
+【時間】{time_part}
+【座標】({lat}, {lng})
+【使用者描述】{desc}
+
+輸出規則：
+1) 1~2 句即可，不要條列
+2) 不要太長（約 35-70 字；若要提醒遲到可略長）
+3) 不要出現「我無法查詢網路」之類字句
+4) 若可能不在營業時間內，必須出現「可能不在營業時間」的提醒
+5) 若可能遲到，必須明確提醒並給至少 2 個解法
+""".strip()
+
+    return prompt, stop_ref
+
+
+def build_and_generate_ai_for_stop(trip_id: str, day: int, stop_id: str) -> str:
+    """
+    ✅ 共用：產生 AI 建議 + 寫回 Firestore，回傳文字
+    """
+    prompt, stop_ref = build_stop_ai_prompt(trip_id, day, stop_id)
+
+    text = call_gemini(prompt).strip()
+    if not text:
+        text = "（暫時無法產生建議，請稍後再試）"
+
+    stop_ref.set(
+        {
+            "aiSuggestion": text,
+            "aiUpdatedAt": admin_firestore.SERVER_TIMESTAMP,
+            "updatedAt": admin_firestore.SERVER_TIMESTAMP,  # 可選：同步更新
+        },
+        merge=True
+    )
+    return text
+
+
+# ==========================================
+# 1) 手動生成 AI（POST）
+# ==========================================
 @app.post("/me/trips/<trip_id>/days/<int:day>/stops/<stop_id>/ai")
 def generate_stop_ai_and_save(trip_id: str, day: int, stop_id: str):
     email = (request.args.get("email") or "").strip()
@@ -1077,78 +1424,93 @@ def generate_stop_ai_and_save(trip_id: str, day: int, stop_id: str):
         return jsonify(error="trip not found"), 404
 
     trip = trip_doc.to_dict() or {}
-    owner = trip.get("ownerEmail")
+    owner = (trip.get("ownerEmail") or "").strip()
     collaborators = trip.get("collaborators", []) or []
     if email != owner and email not in collaborators:
         return jsonify(error="permission denied"), 403
 
-    # ===== 讀 stop =====
-    stop_ref = db.collection("trips").document(trip_id) \
-        .collection("days").document(str(day)) \
-        .collection("stops").document(stop_id)
+    # ===== 直接用共用方法生成 =====
+    try:
+        text = build_and_generate_ai_for_stop(trip_id, day, stop_id)
+        return jsonify(text=text)
+    except RuntimeError as e:
+        msg = str(e)
+        if "stop not found" in msg:
+            return jsonify(error="stop not found"), 404
+        return jsonify(error=msg), 400
+    except Exception as e:
+        return jsonify(error=str(e)), 500
 
+
+# ==========================================
+# 2) 更新 stop（PUT）— 有改到影響 AI 的欄位就自動刷新
+# ==========================================
+@app.put("/me/trips/<trip_id>/days/<int:day>/stops/<stop_id>")
+def update_trip_day_stop(trip_id: str, day: int, stop_id: str):
+    email = (request.args.get("email") or "").strip()
+    if not email:
+        return jsonify(error="email is required"), 400
+    day = max(1, min(day, 7))
+
+    # ===== 權限檢查 =====
+    trip_doc = db.collection("trips").document(trip_id).get()
+    if not trip_doc.exists:
+        return jsonify(error="trip not found"), 404
+
+    trip = trip_doc.to_dict() or {}
+    owner = (trip.get("ownerEmail") or "").strip()
+    collaborators = trip.get("collaborators", []) or []
+    if email != owner and email not in collaborators:
+        return jsonify(error="permission denied"), 403
+
+    stop_ref = (
+        db.collection("trips").document(trip_id)
+        .collection("days").document(str(day))
+        .collection("stops").document(stop_id)
+    )
     stop_doc = stop_ref.get()
     if not stop_doc.exists:
         return jsonify(error="stop not found"), 404
 
-    s = stop_doc.to_dict() or {}
+    data = request.get_json(force=True) or {}
 
-    # ===== 組內容 =====
-    name = (s.get("name") or "").strip() or "未命名地點"
-    category = (s.get("category") or "景點").strip() or "景點"
-    start_time = (s.get("startTime") or "").strip()
-    end_time = (s.get("endTime") or "").strip()
-    time_part = f"{start_time} - {end_time}" if start_time and end_time else "未指定時間"
-    lat = s.get("lat") or 0.0
-    lng = s.get("lng") or 0.0
-    desc = (s.get("description") or "").strip() or "無"
+    # ===== 收集更新欄位 =====
+    updates = {}
 
-    # ===== ✅ 營業時間判斷（如果 stop 有 openingHours）=====
-    opening_hours = s.get("openingHours")  # 你新增 stop 時若有抓到就會存在
-    open_state = None
-    if opening_hours and start_time:
-        open_state = is_likely_open(opening_hours, start_time)
+    # 文字欄位
+    for k in ["name", "description", "category", "startTime", "endTime"]:
+        if k in data:
+            updates[k] = (data.get(k) or "").strip()
 
-    if open_state is True:
-        open_hint = "【營業狀態】你安排的時間可能在營業時間內，請正常給建議。"
-    elif open_state is False:
-        open_hint = "【營業狀態】你安排的時間可能不在營業時間內，請明確提醒「可能不在營業時間」，並給替代方案（改時間或附近備案）。"
-    else:
-        open_hint = "【營業狀態】查不到確切營業時間，請不要亂猜，改成提醒使用者自行確認營業時間。"
+    # 數字欄位
+    if "lat" in data:
+        updates["lat"] = float(data.get("lat") or 0.0)
+    if "lng" in data:
+        updates["lng"] = float(data.get("lng") or 0.0)
 
-    # ===== prompt（重點：依 open_hint 改寫輸出）=====
-    prompt = f"""
-你是一位旅遊行程規劃助理，請用「繁體中文」為下面這個行程點產生一段「很像旅遊 APP 卡片內的建議文字」。
+    # 物件欄位
+    if "openingHours" in data:
+        updates["openingHours"] = data.get("openingHours")
 
-{open_hint}
+    if not updates:
+        return jsonify(ok=True, refreshed=False)
 
-【地點】{name}
-【類型】{category}
-【時間】{time_part}
-【座標】({lat}, {lng})
-【使用者描述】{desc}
+    # ===== 寫入 Firestore =====
+    updates["updatedAt"] = admin_firestore.SERVER_TIMESTAMP
+    stop_ref.set(updates, merge=True)
 
-輸出規則：
-1) 1~2 句即可，不要條列
-2) 不要太長（約 30-50 字）
-3) 不要出現「我無法查詢網路」之類字句
-4) 若可能不在營業時間內，必須出現「可能不在營業時間」的提醒
-""".strip()
+    # ===== 判斷是否需要刷新 AI =====
+    need_refresh = any(k in AI_AFFECT_FIELDS for k in updates.keys())
+    if not need_refresh:
+        return jsonify(ok=True, refreshed=False)
 
+    # ===== 自動刷新 AI =====
     try:
-        text = call_gemini(prompt).strip()
-        if not text:
-            text = "（暫時無法產生建議，請稍後再試）"
-
-        stop_ref.set({
-            "aiSuggestion": text,
-            "aiUpdatedAt": admin_firestore.SERVER_TIMESTAMP
-        }, merge=True)
-
-        return jsonify(text=text)
-
+        text = build_and_generate_ai_for_stop(trip_id, day, stop_id)
+        return jsonify(ok=True, refreshed=True, aiSuggestion=text)
     except Exception as e:
-        return jsonify(error=str(e)), 500
+        # 更新成功，但 AI 刷新失敗
+        return jsonify(ok=True, refreshed=False, aiError=str(e))
 
 
 
